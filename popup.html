@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>提取试卷</title>
+  <style>
+    body {
+      width: 300px;
+      padding: 20px;
+      font-family: Arial, sans-serif;
+    }
+    
+    h1 {
+      font-size: 18px;
+      margin-bottom: 20px;
+      text-align: center;
+    }
+    
+    .option-group {
+      margin-bottom: 20px;
+    }
+    
+    .option {
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+    }
+    
+    .option input {
+      margin-right: 10px;
+    }
+    
+    .info-group {
+      margin-bottom: 20px;
+      padding: 15px;
+      background-color: #f5f5f5;
+      border-radius: 4px;
+    }
+    
+    .info-item {
+      margin-bottom: 10px;
+      font-size: 14px;
+    }
+    
+    .info-label {
+      font-weight: bold;
+      color: #333;
+    }
+    
+    .status-active {
+      color: #188038;
+      font-weight: bold;
+    }
+    
+    .status-inactive {
+      color: #d93025;
+      font-weight: bold;
+    }
+    
+    .status-expired {
+      color: #d93025;
+      font-weight: bold;
+    }
+    
+    .key-group {
+      margin-bottom: 20px;
+    }
+    
+    .key-input {
+      width: 100%;
+      padding: 10px;
+      margin-bottom: 10px;
+      border: 1px solid #dfe1e5;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+    
+    .btn {
+      width: 100%;
+      padding: 10px;
+      background-color: #4285F4;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 16px;
+    }
+    
+    .btn:hover {
+      background-color: #3367D6;
+    }
+    
+    .btn:disabled {
+      background-color: #dadce0;
+      color: #202124;
+      cursor: not-allowed;
+    }
+    
+    .btn-verify {
+      margin-bottom: 8px;
+      padding: 6px;
+      font-size: 12px;
+      background-color: #34a853;
+      width: 30%;
+    }
+    
+    .btn-verify:hover {
+      background-color: #2d8f47;
+    }
+    
+    .verify-result {
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+    
+    .verify-success {
+      background-color: #e6f4ea;
+      color: #188038;
+    }
+    
+    .verify-error {
+      background-color: #fce8e6;
+      color: #d93025;
+    }
+  </style>
+</head>
+<body>
+  <h1>提取试卷</h1>
+  
+  <div class="info-group">
+    <div class="info-item">
+      <span class="info-label">插件ID:</span>
+      <span id="extension-id">加载中...</span>
+    </div>
+    <div class="info-item">
+      <span class="info-label">插件状态:</span>
+      <span id="extension-status" class="status-inactive">未激活</span>
+    </div>
+    <div class="info-item">
+      <span class="info-label">末日时间:</span>
+      <span id="doomsday-time">-</span>
+    </div>
+    <div class="info-item">
+      <span class="info-label">软件版本:</span>
+      <span id="extension-version">加载中...</span>
+    </div>
+  </div>
+  
+  <!-- 联系售后按钮 - 右上角 -->
+  <div style="position: absolute; top: 10px; right: 10px;">
+    <button class="btn btn-verify" id="contact-support-btn" style="background-color: #4285F4; width: auto; padding: 5px 10px; font-size: 12px;">帮助</button>
+  </div>
+  
+  <div class="key-group" id="key-verification">
+    <div class="info-label" style="margin-bottom: 5px;">激活码</div>
+    <input type="text" class="key-input" id="key-input" placeholder="请输入激活码">
+    <button class="btn btn-verify" id="save-btn">保存</button>
+    <button class="btn btn-verify" id="modify-btn" style="display: none;">修改</button>
+    <div class="verify-result" id="verify-result" style="display: none;"></div>
+  </div>
+  
+  <div class="key-group" id="password-verification">
+    <div class="info-label" style="margin-bottom: 5px;">口令激活</div>
+    <input type="text" class="key-input" id="password-input" placeholder="请输入口令">
+    <button class="btn btn-verify" id="activate-by-password-btn" style="background-color: #fbbc05;">激活</button>
+  </div>
+  
+  <div class="option-group" id="version-selection">
+    <div class="option">
+      <input type="radio" id="student" name="version" value="student" checked>
+      <label for="student">学生版</label>
+    </div>
+    <div class="option">
+      <input type="radio" id="teacher" name="version" value="teacher">
+      <label for="teacher">教师版</label>
+    </div>
+  </div>
+  
+  <div class="option-group" id="analysis-location" style="display: none;">
+    <div class="option" style="margin-left: 20px;">
+      <input type="radio" id="analysis-after-question" name="analysisLocation" value="after-question" checked>
+      <label for="analysis-after-question">解析在题后</label>
+    </div>
+    <div class="option" style="margin-left: 20px;">
+      <input type="radio" id="analysis-at-end" name="analysisLocation" value="at-end">
+      <label for="analysis-at-end">解析在卷尾</label>
+    </div>
+  </div>
+  
+  <button class="btn" id="extract-btn" disabled>提取试卷</button>
+  <div style="display: flex; gap: 10px; margin-top: 10px;">
+    <button class="btn" id="save-as-word-btn" style="flex: 1; display: none;">Word（体验）</button>
+    <button class="btn" id="save-as-pdf-btn" style="flex: 1; display: none;">PDF</button>
+  </div>
+  
+  <script src="FileSaver.min.js"></script>
+  <script src="html-docx.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
