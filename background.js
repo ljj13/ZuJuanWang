@@ -1,237 +1,9 @@
-// 是否需要中断verifyActivationStatus函数的执行
-let shouldInterruptVerification = false;
-
-// 弹出窗口连接状态
-let popupPort = null;
-
-// 浏览器启动时初始化
-chrome.runtime.onStartup.addListener(async () => {
-  await initializeExtension();
-});
-
-// 插件安装时初始化
-chrome.runtime.onInstalled.addListener(async () => {
-  await initializeExtension();
-});
-
-// 初始化插件
-async function initializeExtension() {
-  try {
-    // 获取插件ID
-    const extensionId = chrome.runtime.id;
-    
-    // 检查是否有保存的key值
-    const storageResult = await new Promise((resolve) => {
-      chrome.storage.sync.get(['savedKey', 'doomsdayTime'], resolve);
-    });
-    
-    const savedKey = storageResult.savedKey;
-    
-    if (savedKey) {
-      // 验证保存的key值
-      await validateSavedKey(savedKey, extensionId);
-    }
-  } catch (error) {
-    console.error('初始化插件失败:', error);
-  }
-}
-
-// 生成插件ID哈希（8位十六进制）
-async function generateIdHash(id) {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(id);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-  return hashHex.substring(0, 8);
-}
-
-// 生成校验码（4位十六进制）
-async function generateChecksum(id, timestamp) {
-  const secret = "your-secret-key";
-  const checksumInput = `${id}:${timestamp}:${secret}`;
-  const encoder = new TextEncoder();
-  const data = encoder.encode(checksumInput);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-  return hashHex.substring(0, 4);
-}
-
-// 验证保存的key值
-async function validateSavedKey(key, extensionId) {
-  try {
-    // 检查key长度
-    if (key.length !== 20) {
-      throw new Error('无效的key格式，长度应为20位字符');
-    }
-    
-    // 从连续字符串中提取各部分
-    const idHash = key.substring(0, 8);
-    const timestampHex = key.substring(8, 16);
-    const checksum = key.substring(16, 20);
-    
-    // 验证插件ID哈希
-    const currentIdHash = await generateIdHash(extensionId);
-    if (currentIdHash !== idHash) {
-      throw new Error('无效的key，插件ID不匹配');
-    }
-    
-    // 将十六进制时间戳转换为十进制
-    const timestamp = parseInt(timestampHex, 16);
-    if (isNaN(timestamp) || timestamp <= 0) {
-      throw new Error('无效的时间戳格式');
-    }
-    
-    // 生成校验码并验证
-    const generatedChecksum = await generateChecksum(extensionId, timestamp);
-    if (generatedChecksum !== checksum) {
-      throw new Error('无效的key，校验码不匹配');
-    }
-    
-    // 验证成功，保存末日时间
-    await new Promise((resolve) => {
-      chrome.storage.sync.set({ 'doomsdayTime': timestamp }, resolve);
-    });
-    
-    console.log('验证保存的key值成功');
-  } catch (error) {
-    console.error('验证保存的key值失败:', error);
-    // 格式错误、插件ID不匹配、时间戳无效、校验码不匹配时，设置为未激活状态
-    await new Promise((resolve) => {
-      chrome.storage.sync.set({ 'extensionStatus': 'inactive' }, resolve);
-    });
-    // 验证失败，清除保存的key值
-    await new Promise((resolve) => {
-      chrome.storage.sync.remove(['savedKey', 'doomsdayTime'], resolve);
-    });
-  }
-}
-
-// 验证激活状态的函数
-async function verifyActivationStatus() {
-  return new Promise(async (resolve) => {
-    // 重置中断标志
-    shouldInterruptVerification = false;
-    
-    // 获取保存的激活码
-    const storageResult = await new Promise((resolve) => {
-      chrome.storage.sync.get(['savedKey'], resolve);
-    });
-    
-    const savedKey = storageResult.savedKey;
-    
-    if (!savedKey) {
-      resolve({ status: '未激活', message: '未找到激活码' });
-      return;
-    }
-    
-    try {
-      // 尝试调用服务端验证API
-      const response = await fetch('http://39v04f7212.wicp.vip:80/api/verify_key', {
-      //const response = await fetch('http://localhost:8000/api/verify_key', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ key: savedKey })
-      });
-      
-      // 检查是否需要中断
-      if (shouldInterruptVerification) {
-        console.log('验证过程被中断');
-        resolve({ status: '未激活', message: '验证过程被中断' });
-        return;
-      }
-      
-      if (response.ok) {
-        const data = await response.json();
-        if (data.success) {
-          resolve({ status: data.status, message: '验证成功' });
-        } else {
-          resolve({ status: '未激活', message: data.message || '验证失败' });
-        }
-      } else {
-        resolve({ status: '未激活', message: '网络请求失败' });
-      }
-    } catch (error) {
-      console.error('验证激活状态失败:', error);
-      
-      // 检查是否需要中断
-      if (shouldInterruptVerification) {
-        console.log('验证过程被中断');
-        resolve({ status: '未激活', message: '验证过程被中断' });
-        return;
-      }
-      
-      // API调用失败时，设置超时处理
-      let timeout5s, timeout10s, timeout20s, timeout40s;
-      let timeoutTriggered = false;
-      
-      // 5秒超时
-      timeout5s = setTimeout(() => {
-        if (!timeoutTriggered && !shouldInterruptVerification) {
-          console.log('5秒内未返回：确认网络状态！');
-          // 向popup.js发送提示消息，继续等待
-          chrome.runtime.sendMessage({ action: 'networkStatus', message: '尝试重新提取！' });
-        }
-      }, 5000);
-      
-      // 10秒超时
-      timeout10s = setTimeout(() => {
-        if (!timeoutTriggered && !shouldInterruptVerification) {
-          console.log('10秒内未返回：尝试重新提取！');
-          // 向popup.js发送提示消息，继续等待
-          chrome.runtime.sendMessage({ action: 'networkStatus', message: '服务异常，请尝试重新提取！' });
-        }
-      }, 10000);
-	  
-      // 20秒超时
-      timeout20s = setTimeout(() => {
-        if (!timeoutTriggered && !shouldInterruptVerification) {
-          console.log('20秒内未返回：尝试重新提取！');
-          // 向popup.js发送提示消息，继续等待
-          chrome.runtime.sendMessage({ action: 'networkStatus', message: '请退出后，再次尝试重新提取！' });
-        }
-      }, 20000);
-	  
-      // 40秒超时
-      timeout60s = setTimeout(() => {
-        if (!timeoutTriggered && !shouldInterruptVerification) {
-          timeoutTriggered = true;
-          console.log('60秒内未返回：网络错误，请尝试重新提取！');
-          // 60秒超时继续执行提取试卷业务
-          resolve({ status: '激活', message: '网络超时，继续执行提取试卷业务' });
-        }
-      }, 60000);
-      
-      // 定期检查中断标志
-      const checkInterruptInterval = setInterval(() => {
-        if (shouldInterruptVerification) {
-          console.log('验证过程被中断，清除所有定时器');
-          // 清除所有定时器
-          clearTimeout(timeout5s);
-          clearTimeout(timeout10s);
-          clearTimeout(timeout20s);
-          clearTimeout(timeout60s);
-          clearInterval(checkInterruptInterval);
-          resolve({ status: '未激活', message: '验证过程被中断' });
-        }
-      }, 100); // 增加检查频率，确保及时响应
-    }
-  });
-}
 
 // 监听来自popup.js的消息
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'extractPaper') {
     // 执行差异化处理和提取试卷功能
     executeExtractPaper(message.tabId, message.version, message.analysisLocation);
-    sendResponse({ success: true });
-  } else if (message.action === 'interruptVerification') {
-    // 处理中断验证消息
-    console.log('收到中断验证消息');
-    shouldInterruptVerification = true;
     sendResponse({ success: true });
   } else if (message.action === 'convertPageToWord') {
     // 执行网页转Word功能
@@ -240,42 +12,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-// 监听弹出窗口连接
-chrome.runtime.onConnect.addListener((port) => {
-  if (port.name === 'popup-connection') {
-    console.log('弹出窗口已连接');
-    popupPort = port;
-    
-    // 监听连接断开
-    port.onDisconnect.addListener(() => {
-      console.log('弹出窗口已断开连接');
-      popupPort = null;
-      // 当弹出窗口断开连接时，中断验证过程
-      shouldInterruptVerification = true;
-    });
-  }
-});
 
 // 执行差异化处理和提取试卷功能
 async function executeExtractPaper(tabId, version, analysisLocation) {
   try {
-    // 验证激活状态
-    const activationResult = await verifyActivationStatus();
-    
-    if (activationResult.status === '未激活') {
-      // 更新插件状态为未激活
-      await new Promise((resolve) => {
-        chrome.storage.sync.remove(['savedKey', 'doomsdayTime'], resolve);
-      });
-      
-      // 向popup.js发送提示消息
-      chrome.runtime.sendMessage({ action: 'networkStatus', message: '请重新激活！' });
-      
-      // 不做后续提取试卷业务
-      return;
-    }
-    
-    // 激活状态正常，继续执行原业务
     // 先获取当前页面信息
     const [currentTab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const currentUrl = currentTab.url;
@@ -1309,11 +1049,105 @@ async function convertPageToWord(sendResponse) {
         
 
         
+        // ==== 集成 MS优化.bas 排版宏 ====
+        // ① 表格可打印边框置空（屏幕上靠 Word 的"查看网格线"虚框看结构）
+        // ② 全部表格宽度 100%，列宽按原比例折算成百分比，防止固定列宽撑出页面
+        // ③ 超宽图片等比缩小：表格内以"单元格宽-2pt"为上限，表格外以正文宽为上限
+        function applyMsOptimizations() {
+          const WORD_CONTENT_WIDTH = 697; // A4 宽 21cm - 左右边距 1.27cm×2 ≈ 697px
+          const MAX_IMG_WIDTH = 690;      // 表格外图片上限，留 7px 余量
+          const CELL_MARGIN = 3;          // 单元格内边距余量，约等于宏里的 2pt
+
+          // Word 实际生效的图片宽度：width 属性 > 内联样式(px) > 固有宽度。
+          // 预览页的站点 CSS 不会进入导出的 docx，不能按屏幕显示宽度判断是否超宽
+          function wordVisibleWidth(img) {
+            const attrW = parseInt(img.getAttribute('width'), 10);
+            if (!isNaN(attrW) && attrW > 0) return attrW;
+            const match = /([\d.]+)px/.exec(img.style.width || '');
+            if (match) return parseFloat(match[1]);
+            return img.naturalWidth || 0;
+          }
+
+          // 先快照尺寸再改样式，避免改动后的布局污染后续测量
+          const tableSnapshots = Array.from(document.querySelectorAll('table')).map(tbl => {
+            const tableWidth = tbl.getBoundingClientRect().width;
+            // 该表在 Word 里约占满 697px 正文宽，用于把单元格宽投影到 Word 页面
+            const wordScale = tableWidth > 0 ? WORD_CONTENT_WIDTH / tableWidth : 1;
+            return {
+              tbl: tbl,
+              tableWidth: tableWidth,
+              wordScale: wordScale,
+              cells: Array.from(tbl.querySelectorAll('td,th')).map(cell => ({
+                cell: cell,
+                width: cell.getBoundingClientRect().width
+              })),
+              imgs: Array.from(tbl.querySelectorAll('img')).map(img => {
+                const cell = img.closest('td,th');
+                return {
+                  img: img,
+                  width: wordVisibleWidth(img),
+                  cellWidth: cell ? cell.getBoundingClientRect().width : 0
+                };
+              })
+            };
+          });
+
+          tableSnapshots.forEach(snap => {
+            const tbl = snap.tbl;
+
+            // ② 表格宽度 100%，并去掉边框类属性
+            tbl.removeAttribute('width');
+            tbl.removeAttribute('border');
+            tbl.removeAttribute('cellspacing');
+            tbl.removeAttribute('frame');
+            tbl.removeAttribute('rules');
+            tbl.style.width = '100%';
+            tbl.style.border = 'none'; // ① 可打印边框置空
+
+            // 列宽折算成百分比：固定像素列宽在 Word 里会把表格撑出页面
+            snap.cells.forEach(item => {
+              if (snap.tableWidth > 0 && item.width > 0) {
+                item.cell.style.width = (item.width / snap.tableWidth * 100).toFixed(2) + '%';
+              }
+              item.cell.removeAttribute('width');
+              item.cell.style.border = 'none';
+            });
+
+            // ③ 表格内图片：以"Word 单元格宽 - 2pt"为上限，用百分比宽度自适应
+            snap.imgs.forEach(item => {
+              if (item.cellWidth <= 0) return;
+              const wordCellWidth = item.cellWidth * snap.wordScale;
+              if (item.width > wordCellWidth - CELL_MARGIN) {
+                item.img.style.width = ((wordCellWidth - CELL_MARGIN) / wordCellWidth * 100).toFixed(1) + '%';
+                item.img.style.height = 'auto';
+                item.img.removeAttribute('height');
+              }
+            });
+          });
+
+          // ③ 表格外图片：上限为 Word 正文宽度
+          Array.from(document.querySelectorAll('img')).forEach(img => {
+            if (img.closest('td,th')) return;
+            if (wordVisibleWidth(img) > MAX_IMG_WIDTH) {
+              img.style.width = MAX_IMG_WIDTH + 'px';
+              img.style.height = 'auto';
+              img.removeAttribute('height');
+            }
+          });
+        }
+
         // 获取页面内容
         function getPageContent() {
           // 删除添加作答区和删除作答区按钮
           removeAnswerButtons();
-          
+
+          // 移除预览页顶部的悬浮按钮栏，避免混入导出内容
+          const topButtonsBar = document.querySelector('.top-buttons');
+          if (topButtonsBar) topButtonsBar.remove();
+
+          // 应用 MS优化.bas 的排版逻辑
+          applyMsOptimizations();
+
           // 获取页面标题
           const title = document.title || '无标题';
           
@@ -1365,12 +1199,8 @@ async function convertPageToWord(sendResponse) {
             margin: 10px 0;
         }
         th, td {
-            border: 1px solid #ddd;
             padding: 8px;
             text-align: left;
-        }
-        th {
-            background-color: #f2f2f2;
         }
         ul, ol {
             margin-left: 20px;

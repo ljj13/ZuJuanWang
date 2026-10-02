@@ -1,28 +1,25 @@
 {
   "manifest_version": 3,
   "name": "提取试卷",
-  "version": "3.1.6",
+  "version": "4.1.0",
   "description": "点击启动后，将页面中试卷内容作为新页面打开",
   "action": {
     "default_popup": "popup.html"
   },
   "permissions": [
     "activeTab",
-    "scripting",
-    "storage"
+    "scripting"
   ],
   "host_permissions": [
-    "http://localhost:8000/",
     "*://*.zujuan.com/*",
-    "*://*.xkw.com/*",
-    "http://39v04f7212.wicp.vip:80/"
+    "*://*.xkw.com/*"
   ],
   "background": {
     "service_worker": "background.js"
   },
   "web_accessible_resources": [
     {
-      "resources": ["html-docx.js", "FileSaver.min.js"],
+      "resources": ["html-docx.js"],
       "matches": ["<all_urls>"]
     }
   ]
