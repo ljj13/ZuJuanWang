@@ -1,10 +1,20 @@
 {
   "manifest_version": 3,
   "name": "提取试卷",
-  "version": "4.1.0",
+  "version": "4.2.1",
   "description": "点击启动后，将页面中试卷内容作为新页面打开",
   "action": {
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
   },
   "permissions": [
     "activeTab",
@@ -16,11 +26,5 @@
   ],
   "background": {
     "service_worker": "background.js"
-  },
-  "web_accessible_resources": [
-    {
-      "resources": ["html-docx.js"],
-      "matches": ["<all_urls>"]
-    }
-  ]
+  }
 }

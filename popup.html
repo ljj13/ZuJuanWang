@@ -118,9 +118,20 @@
     </div>
   </div>
 
+  <div class="option-group" id="paper-size">
+    <div class="option">
+      <input type="radio" id="paper-a4" name="paperSize" value="a4" checked>
+      <label for="paper-a4">A4 纵向</label>
+    </div>
+    <div class="option">
+      <input type="radio" id="paper-b4" name="paperSize" value="b4">
+      <label for="paper-b4">B4 横向（8开）</label>
+    </div>
+  </div>
+
   <button class="btn" id="extract-btn">提取试卷</button>
   <div style="display: flex; gap: 10px; margin-top: 10px;">
-    <button class="btn" id="save-as-word-btn" style="flex: 1; display: none;">Word（体验）</button>
+    <button class="btn" id="save-as-word-btn" style="flex: 1; display: none;">导出Word</button>
     <button class="btn" id="save-as-pdf-btn" style="flex: 1; display: none;">PDF</button>
   </div>
 

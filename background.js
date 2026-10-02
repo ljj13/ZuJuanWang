@@ -3,54 +3,74 @@
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'extractPaper') {
     // 执行差异化处理和提取试卷功能
-    executeExtractPaper(message.tabId, message.version, message.analysisLocation);
+    executeExtractPaper(message.tabId, message.version, message.analysisLocation, message.paperSize);
     sendResponse({ success: true });
   } else if (message.action === 'convertPageToWord') {
     // 执行网页转Word功能
-    convertPageToWord(sendResponse);
+    convertPageToWord(message, sendResponse);
+    return true; // 表示会异步发送响应
+  } else if (message.action === 'fetchImageDataUrl') {
+    // 按需拉取单张图片转 dataURL，供导出页内联
+    fetchImageDataUrl(message.url).then(sendResponse);
     return true; // 表示会异步发送响应
   }
 });
 
 
+// 解析元素选择器列表（差异化处理与提取后状态恢复共用同一份，保证两次注入收集顺序一致）
+const ANALYSIS_SELECTORS = [
+  '.exam-item__analysis',
+  '.analysis',
+  '.解析',
+  '[class*="analysis"]',
+  '[class*="解析"]',
+  '[id*="analysis"]',
+  '[id*="解析"]'
+];
+
 // 执行差异化处理和提取试卷功能
-async function executeExtractPaper(tabId, version, analysisLocation) {
+async function executeExtractPaper(tabId, version, analysisLocation, paperSize) {
+  // 差异化处理后额外等待页面稳定的时长
+  const EXTRACT_STABLE_MS = 500;
   try {
-    // 先获取当前页面信息
-    const [currentTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    const currentUrl = currentTab.url;
-    
     // 执行差异化处理
     await chrome.scripting.executeScript({
       target: { tabId: tabId },
-      func: (version, analysisLocation) => {
+      func: (version, analysisLocation, analysisSelectors) => {
         return new Promise(resolve => {
           const currentUrl = window.location.href;
-          
+
           // 差异化处理逻辑
           if (currentUrl.includes('zujuan.xkw.com')) {
-            // 查找所有解析元素
-            // 假设解析元素有特定的class，这里使用常见的可能命名
-            const analysisSelectors = [
-              '.exam-item__analysis',
-              '.analysis',
-              '.解析',
-              '[class*="analysis"]',
-              '[class*="解析"]',
-              '[id*="analysis"]',
-              '[id*="解析"]'
-            ];
-            
             // 获取所有可能的解析元素
             let analysisElements = [];
             analysisSelectors.forEach(selector => {
               const elements = document.querySelectorAll(selector);
               analysisElements = [...analysisElements, ...elements];
             });
-            
+
             // 去重
             analysisElements = [...new Set(analysisElements)];
-            
+
+            // 备份原页面解析显示状态，提取完成后由恢复脚本还原
+            const optLookup = (cnt) => cnt.closest('.exam-item')?.querySelector('.exam-item__opt')
+              || cnt.parentElement?.querySelector('.exam-item__opt')
+              || cnt.parentElement?.parentElement?.querySelector('.exam-item__opt');
+            window.__paperExtractBackup = {
+              analyses: analysisElements.map(el => ({
+                display: el.style.display || '',
+                visibility: el.style.visibility || '',
+                hidden: el.getAttribute('hidden'),
+                className: el.getAttribute('class')
+              })),
+              opts: Array.from(document.querySelectorAll('.exam-item__cnt')).map(cnt => {
+                const opt = optLookup(cnt);
+                return opt ? {
+                  optHidden: opt.hasAttribute('hidden') || opt.style.display === 'none' || opt.style.visibility === 'hidden'
+                } : null;
+              })
+            };
+
             if (version === 'student') {
               // 学生版：隐藏每一个解析
               analysisElements.forEach(element => {
@@ -150,25 +170,31 @@ async function executeExtractPaper(tabId, version, analysisLocation) {
             }
           }
           
-          // 等待666毫秒确保点击操作完全完成
+          // 等待一段时间确保点击操作完全完成
+          const CLICK_SETTLE_MS = 666;
           setTimeout(() => {
             resolve();
-          }, 666);
+          }, CLICK_SETTLE_MS);
         });
       },
-      args: [version, analysisLocation]
+      args: [version, analysisLocation, ANALYSIS_SELECTORS]
     });
-    
-    // 额外添加500毫秒延迟，确保页面完全稳定
-    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // 额外添加延迟，确保页面完全稳定
+    await new Promise(resolve => setTimeout(resolve, EXTRACT_STABLE_MS));
     
     // 执行提取试卷功能
     await chrome.scripting.executeScript({
       target: { tabId: tabId },
-      func: (version, analysisLocation) => {
+      func: (version, analysisLocation, paperSize) => {
         // 获取当前页面URL
         const currentUrl = window.location.href;
         let contentElement = null;
+
+        // HTML 转义（试卷标题可能含 < > & 等字符）
+        function escapeHtml(value) {
+          return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
         
         // 检查面包屑导航
         const breadNavItems = document.querySelectorAll('a.item.bread-nav-item');
@@ -233,47 +259,8 @@ async function executeExtractPaper(tabId, version, analysisLocation) {
           const doc = parser.parseFromString(articleHtml, 'text/html');
           
           // 移除不需要的元素
-          // 找到并移除所有.ques-ctrl.clearfix元素
-          const quesCtrlElements = doc.querySelectorAll('.ques-ctrl.clearfix');
-          quesCtrlElements.forEach(element => {
-            element.remove();
-          });
-          
-          // 找到并移除所有.btn-box.clearfix元素
-          const btnBoxElements = doc.querySelectorAll('.btn-box.clearfix');
-          btnBoxElements.forEach(element => {
-            element.remove();
-          });
-          
-          // 找到并移除所有.ctrl-box元素
-          const ctrlBoxElements = doc.querySelectorAll('.ctrl-box');
-          ctrlBoxElements.forEach(element => {
-            element.remove();
-          });
-          
-          // 找到并移除所有.exam-item__info clearfix元素
-          const examItemInfoElements = doc.querySelectorAll('.exam-item__info.clearfix');
-          examItemInfoElements.forEach(element => {
-            element.remove();
-          });
-          
-          // 找到并移除所有.top-msg元素
-          const topMsgElements = doc.querySelectorAll('.top-msg');
-          topMsgElements.forEach(element => {
-            element.remove();
-          });
-          
-          // 找到并移除所有.msg-box元素
-          const msgBoxElements = doc.querySelectorAll('.msg-box');
-          msgBoxElements.forEach(element => {
-            element.remove();
-          });
-          
-          // 找到并移除所有.info-list元素
-          const infoListElements = doc.querySelectorAll('.info-list');
-          infoListElements.forEach(element => {
-            element.remove();
-          });
+          ['.ques-ctrl.clearfix', '.btn-box.clearfix', '.ctrl-box', '.exam-item__info.clearfix', '.top-msg', '.msg-box', '.info-list']
+            .forEach(selector => doc.querySelectorAll(selector).forEach(element => element.remove()));
           
           // 处理.analyze-title元素，移除其中的"导出"字样
           const analyzeTitleElements = doc.querySelectorAll('.analyze-title');
@@ -289,7 +276,6 @@ async function executeExtractPaper(tabId, version, analysisLocation) {
           titleTxtElements.forEach(element => {
             // 设置为可编辑
             element.contentEditable = 'true';
-            element.readOnly = false;
             element.style.pointerEvents = 'auto';
             element.style.userSelect = 'auto';
             element.setAttribute('contenteditable', 'true');
@@ -308,7 +294,6 @@ async function executeExtractPaper(tabId, version, analysisLocation) {
               
               // 设置.title-txt元素为可修改
               titleTxtElement.contentEditable = 'true';
-              titleTxtElement.readOnly = false;
               titleTxtElement.style.pointerEvents = 'auto';
               titleTxtElement.style.userSelect = 'auto';
               titleTxtElement.style.textAlign = 'center';
@@ -323,7 +308,6 @@ async function executeExtractPaper(tabId, version, analysisLocation) {
               
               // 设置#pui_maintitle元素为可修改并设置字体样式
               puiMainTitleElement.contentEditable = 'true';
-              puiMainTitleElement.readOnly = false;
               puiMainTitleElement.style.pointerEvents = 'auto';
               puiMainTitleElement.style.userSelect = 'auto';
               puiMainTitleElement.style.textAlign = 'center';
@@ -340,7 +324,6 @@ async function executeExtractPaper(tabId, version, analysisLocation) {
               
               // 设置.txt元素为可修改
               txtElement.contentEditable = 'true';
-              txtElement.readOnly = false;
               txtElement.style.pointerEvents = 'auto';
               txtElement.style.userSelect = 'auto';
               txtElement.style.textAlign = 'center';
@@ -370,7 +353,6 @@ async function executeExtractPaper(tabId, version, analysisLocation) {
               
               // 设置#pui_maintitle元素为可修改并设置字体样式
               puiMainTitleElement.contentEditable = 'true';
-              puiMainTitleElement.readOnly = false;
               puiMainTitleElement.style.pointerEvents = 'auto';
               puiMainTitleElement.style.userSelect = 'auto';
               puiMainTitleElement.style.textAlign = 'center';
@@ -388,7 +370,6 @@ async function executeExtractPaper(tabId, version, analysisLocation) {
                 element.style.textAlign = 'center'; // 居中对齐
                 // 设置为可编辑
                 element.contentEditable = 'true';
-                element.readOnly = false;
                 element.style.pointerEvents = 'auto';
                 element.style.userSelect = 'auto';
                 element.setAttribute('contenteditable', 'true');
@@ -407,7 +388,6 @@ async function executeExtractPaper(tabId, version, analysisLocation) {
                 element.style.textAlign = 'center'; // 居中对齐
                 // 设置为可编辑
                 element.contentEditable = 'true';
-                element.readOnly = false;
                 element.style.pointerEvents = 'auto';
                 element.style.userSelect = 'auto';
                 element.setAttribute('contenteditable', 'true');
@@ -519,7 +499,7 @@ async function executeExtractPaper(tabId, version, analysisLocation) {
             <html>
             <head>
               <meta charset="UTF-8">
-              <title>${titleWithVersion}</title>
+              <title>${escapeHtml(titleWithVersion)}</title>
               ${styleSheets}
               <style>
                 /* 基础样式，确保内容在新页面中正常显示 */
@@ -586,7 +566,7 @@ async function executeExtractPaper(tabId, version, analysisLocation) {
             <body>
               <!-- 顶部按钮 -->
               <div class="top-buttons">
-                <button class="word-btn" id="download-word-btn">试用Word</button>
+                <button class="word-btn" id="download-word-btn">导出Word</button>
                 <button class="pdf-btn" id="download-pdf-btn">下载PDF</button>
               </div>
               
@@ -596,6 +576,9 @@ async function executeExtractPaper(tabId, version, analysisLocation) {
           `);
           
           newWindow.document.close();
+
+          // 记录导出纸张类型，供后台转换 Word 时读取
+          newWindow.document.documentElement.setAttribute('data-paper-size', paperSize || 'a4');
           
           // 文档加载完成后添加点击事件监听器
           newWindow.addEventListener('load', function() {
@@ -603,7 +586,6 @@ async function executeExtractPaper(tabId, version, analysisLocation) {
             const paperTitleElements = newWindow.document.querySelectorAll('.paper-title');
             paperTitleElements.forEach(element => {
               element.contentEditable = 'true';
-              element.readOnly = false;
               element.style.pointerEvents = 'auto';
               element.style.userSelect = 'auto';
               element.setAttribute('contenteditable', 'true');
@@ -613,7 +595,6 @@ async function executeExtractPaper(tabId, version, analysisLocation) {
             const studentInputElement = newWindow.document.getElementById('pui_studentinput');
             if (studentInputElement) {
               studentInputElement.contentEditable = 'true';
-              studentInputElement.readOnly = false;
               studentInputElement.style.pointerEvents = 'auto';
               studentInputElement.style.userSelect = 'auto';
               studentInputElement.style.textAlign = 'center';
@@ -627,7 +608,6 @@ async function executeExtractPaper(tabId, version, analysisLocation) {
               const textAlign = element.style.textAlign;
               if (lineHeight === '19px' && textAlign === 'center') {
                 element.contentEditable = 'true';
-                element.readOnly = false;
                 element.style.pointerEvents = 'auto';
                 element.style.userSelect = 'auto';
                 element.setAttribute('contenteditable', 'true');
@@ -681,60 +661,19 @@ async function executeExtractPaper(tabId, version, analysisLocation) {
               }
             }
             
-            // 删除seal-line内容
-            const sealLineElements = newWindow.document.querySelectorAll('.seal-line');
-            sealLineElements.forEach(element => {
-              // 清空seal-line元素的内容
-              element.innerHTML = '';
-            });
-            
-            // 选择学生版时，删除exam-item__opt里的内容
+            // 选择学生版时，清空exam-item__opt里的解析内容
             if (version === 'student') {
-              const examItemOptElements = newWindow.document.querySelectorAll('.exam-item__opt');
-              examItemOptElements.forEach(element => {
-                // 清空exam-item__opt元素的内容
+              newWindow.document.querySelectorAll('.exam-item__opt').forEach(element => {
                 element.innerHTML = '';
               });
             }
-            
-            // 删除empty-box group-exam-empty里的内容
-            const emptyBoxElements = newWindow.document.querySelectorAll('.empty-box.group-exam-empty');
-            emptyBoxElements.forEach(element => {
-              // 清空empty-box group-exam-empty元素的内容
-              element.innerHTML = '';
-            });
-            
-            // 删除deleted-box里的内容
-            const deletedBoxElements = newWindow.document.querySelectorAll('.deleted-box');
-            deletedBoxElements.forEach(element => {
-              // 清空deleted-box元素的内容
-              element.innerHTML = '';
-            });
-            
-            // 删除title为评分栏的table里的内容
-            const scoreTableElements = newWindow.document.querySelectorAll('table[title="评分栏"]');
-            scoreTableElements.forEach(element => {
-              // 清空title为评分栏的table元素的内容
-              element.innerHTML = '';
-            });
-            
-            // 删除多个指定元素里的内容
-            const elementsToClear = [
-              '.secrecy-mark',
-              '.paper-info',
-              '.std-input',
-              '.score-table',
-              '.notice-box',
-              '.exam-item__custom'
-            ];
-            
-            elementsToClear.forEach(selector => {
-              const elements = newWindow.document.querySelectorAll(selector);
-              elements.forEach(element => {
-                // 清空元素的内容
+
+            // 清空指定元素的内容
+            ['.seal-line', '.empty-box.group-exam-empty', '.deleted-box', 'table[title="评分栏"]',
+              '.secrecy-mark', '.paper-info', '.std-input', '.score-table', '.notice-box', '.exam-item__custom']
+              .forEach(selector => newWindow.document.querySelectorAll(selector).forEach(element => {
                 element.innerHTML = '';
-              });
-            });
+              }));
             
 
             
@@ -924,17 +863,21 @@ async function executeExtractPaper(tabId, version, analysisLocation) {
             if (downloadWordBtn) {
               downloadWordBtn.addEventListener('click', function(e) {
                 e.stopPropagation();
-                // 触发Word转换功能
+                // 触发Word转换功能（文件由后台注入的脚本在本页面内直接触发下载）
+                const originalText = downloadWordBtn.textContent;
+                downloadWordBtn.textContent = '导出中…';
+                downloadWordBtn.disabled = true;
                 chrome.runtime.sendMessage({ action: 'convertPageToWord' }, function(response) {
-                  if (response && response.success) {
-                    // 创建下载链接
-                    const link = newWindow.document.createElement('a');
-                    link.href = response.dataUrl;
-                    link.download = response.fileName;
-                    newWindow.document.body.appendChild(link);
-                    link.click();
-                    newWindow.document.body.removeChild(link);
+                  downloadWordBtn.disabled = false;
+                  if (chrome.runtime.lastError || !response || !response.success) {
+                    const err = (chrome.runtime.lastError && chrome.runtime.lastError.message)
+                      || (response && response.error) || '未知错误';
+                    downloadWordBtn.textContent = originalText;
+                    alert('导出Word失败：' + err);
+                    return;
                   }
+                  downloadWordBtn.textContent = '✓ 已导出';
+                  setTimeout(function() { downloadWordBtn.textContent = originalText; }, 3000);
                 });
               });
             }
@@ -947,80 +890,138 @@ async function executeExtractPaper(tabId, version, analysisLocation) {
                 newWindow.print();
               });
             }
-            
-            // 防重复点击标志
-            let isProcessingClick = false;
-            
-            // 鼠标点击事件监听器，仅处理特定元素的点击，禁用左半边和右半边的点击功能
-            newWindow.document.addEventListener('click', function(e) {
-              // 阻止事件冒泡，防止多次触发
-              e.stopPropagation();
-              
-              // 防重复点击
-              if (isProcessingClick) {
-                return;
-              }
-              
-              // 检查点击目标是否为paper-title、pui_studentinput、pui_maintitle、title-txt元素，或具有特定样式的p元素，或它们的子元素
-              const target = e.target;
-              const isPaperTitle = target.classList.contains('paper-title') || target.closest('.paper-title');
-              const isStudentInput = target.id === 'pui_studentinput' || target.closest('#pui_studentinput');
-              const isMainTitle = target.id === 'pui_maintitle' || target.closest('#pui_maintitle');
-              const isTitleTxt = target.classList.contains('title-txt') || target.closest('.title-txt');
-              
-              // 检查是否为具有特定样式的p元素
-              let isSpecialPElement = false;
-              let currentElement = target;
-              while (currentElement) {
-                if (currentElement.tagName === 'P') {
-                  const lineHeight = currentElement.style.lineHeight;
-                  const textAlign = currentElement.style.textAlign;
-                  if (lineHeight === '19px' && textAlign === 'center') {
-                    isSpecialPElement = true;
-                    break;
-                  }
-                }
-                currentElement = currentElement.parentElement;
-              }
-              
-              // 仅处理特定元素的点击，禁用左半边和右半边的点击功能
-              // 移除了根据点击位置触发不同功能的代码
-            });
           });
         } else {
           // 向popup.js发送提示消息
           chrome.runtime.sendMessage({ action: 'networkStatus', message: '未找到指定的article.paper-cnt.clearfix元素' });
         }
       },
-      args: [version, analysisLocation]
+      args: [version, analysisLocation, paperSize]
     });
+
+    // 提取完成后，恢复原页面的解析显示状态（还原差异化处理的改动）
+    await restorePageAnalysisState(tabId);
   } catch (error) {
     console.error('执行提取试卷功能失败:', error);
+    // 失败时通过消息通道通知 popup 显示错误
+    chrome.runtime.sendMessage({ action: 'networkStatus', message: `提取失败：${error.message || error}` }).catch(() => {});
+  }
+}
+
+// 提取完成后恢复原页面状态：还原被改动的解析元素样式，把被点击翻转的解析显隐再点回去
+async function restorePageAnalysisState(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      func: (analysisSelectors) => {
+        const backup = window.__paperExtractBackup;
+        if (!backup) return;
+        delete window.__paperExtractBackup;
+
+        // 与差异化处理时相同的选择器顺序，保证按索引对位还原
+        let analysisElements = [];
+        analysisSelectors.forEach(selector => {
+          const elements = document.querySelectorAll(selector);
+          analysisElements = [...analysisElements, ...elements];
+        });
+        analysisElements = [...new Set(analysisElements)];
+
+        analysisElements.forEach((el, i) => {
+          const snap = backup.analyses[i];
+          if (!snap) return;
+          el.style.display = snap.display;
+          el.style.visibility = snap.visibility;
+          if (snap.hidden === null) {
+            el.removeAttribute('hidden');
+          } else {
+            el.setAttribute('hidden', snap.hidden);
+          }
+          if (snap.className === null) {
+            el.removeAttribute('class');
+          } else {
+            el.setAttribute('class', snap.className);
+          }
+        });
+
+        // 解析显隐被点击翻转的题目，再点一次复原
+        const optLookup = (cnt) => cnt.closest('.exam-item')?.querySelector('.exam-item__opt')
+          || cnt.parentElement?.querySelector('.exam-item__opt')
+          || cnt.parentElement?.parentElement?.querySelector('.exam-item__opt');
+        const cntElements = document.querySelectorAll('.exam-item__cnt');
+        cntElements.forEach((cnt, i) => {
+          const snap = backup.opts[i];
+          if (!snap) return;
+          const opt = optLookup(cnt);
+          if (!opt) return;
+          const nowHidden = opt.hasAttribute('hidden') || opt.style.display === 'none' || opt.style.visibility === 'hidden';
+          if (nowHidden !== snap.optHidden) {
+            cnt.click();
+          }
+        });
+      },
+      args: [ANALYSIS_SELECTORS]
+    });
+  } catch (error) {
+    console.error('恢复原页面状态失败:', error);
+  }
+}
+
+// 把 ArrayBuffer 转成 base64（Service Worker 里没有 FileReader）
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+// 拉取单张图片转 dataURL。带 8 秒超时，防止单张图片连接停滞拖死整个导出
+async function fetchImageDataUrl(url) {
+  if (!/^https?:\/\//i.test(url)) return { ok: false, error: '非 http(s) 链接' };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const resp = await fetch(url, { credentials: 'omit', signal: controller.signal });
+    if (!resp.ok) return { ok: false, error: 'HTTP ' + resp.status };
+    const buf = await resp.arrayBuffer();
+    if (buf.byteLength > 8 * 1024 * 1024) return { ok: false, error: '图片超过 8MB' };
+    const type = resp.headers.get('content-type') || 'image/png';
+    return { ok: true, dataUrl: `data:${type};base64,${arrayBufferToBase64(buf)}` };
+  } catch (e) {
+    return { ok: false, error: e && e.name === 'AbortError' ? '拉取超时' : String((e && e.message) || e) };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
 // 网页转Word功能实现
-async function convertPageToWord(sendResponse) {
+async function convertPageToWord(message, sendResponse) {
   try {
     // 获取当前活动标签页
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    
+
     if (!tab) {
       sendResponse({ success: false, error: '无法获取当前标签页' });
       return;
     }
-    
+
     // 向标签页注入html-docx-js库，然后获取页面内容并生成docx文档
     // 首先注入html-docx-js库
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       files: ['html-docx.js']
     });
-    
+
     // 然后注入我们的转换脚本
     const result = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      func: function() {
+      func: async function(paperSize) {
+        // 纸张类型：popup 传入优先，其次读预览页记录。A4 纵向正文宽 ≈697px；B4 横向（8开）≈1280px
+        const paper = (paperSize || document.documentElement.getAttribute('data-paper-size') || 'a4').toLowerCase();
+        const WORD_CONTENT_WIDTH = paper === 'b4' ? 1280 : 697;
+
         // 删除页面中的添加作答区和删除作答区按钮
         function removeAnswerButtons() {
           // 获取所有按钮
@@ -1054,8 +1055,7 @@ async function convertPageToWord(sendResponse) {
         // ② 全部表格宽度 100%，列宽按原比例折算成百分比，防止固定列宽撑出页面
         // ③ 超宽图片等比缩小：表格内以"单元格宽-2pt"为上限，表格外以正文宽为上限
         function applyMsOptimizations() {
-          const WORD_CONTENT_WIDTH = 697; // A4 宽 21cm - 左右边距 1.27cm×2 ≈ 697px
-          const MAX_IMG_WIDTH = 690;      // 表格外图片上限，留 7px 余量
+          const MAX_IMG_WIDTH = WORD_CONTENT_WIDTH - 7; // 表格外图片上限，留 7px 余量
           const CELL_MARGIN = 3;          // 单元格内边距余量，约等于宏里的 2pt
 
           // Word 实际生效的图片宽度：width 属性 > 内联样式(px) > 固有宽度。
@@ -1136,14 +1136,49 @@ async function convertPageToWord(sendResponse) {
           });
         }
 
+        // 通过后台按需拉取图片并内联为 dataURL（单张超时/失败仅保留远程链接，不阻塞导出）
+        function inlineImagesViaBackground() {
+          const imgs = Array.from(document.querySelectorAll('img')).filter(img => /^https?:\/\//i.test(img.src));
+          return Promise.all(imgs.map(img =>
+            new Promise(resolve => {
+              let settled = false;
+              const finish = () => { if (!settled) { settled = true; resolve(); } };
+              try {
+                chrome.runtime.sendMessage({ action: 'fetchImageDataUrl', url: img.src }, resp => {
+                  void chrome.runtime.lastError; // 后台无响应时忽略，保留远程链接
+                  if (resp && resp.ok) {
+                    img.src = resp.dataUrl;
+                    img.removeAttribute('srcset');
+                  }
+                  finish();
+                });
+                setTimeout(finish, 12000); // 消息通道兜底超时
+              } catch (e) {
+                finish();
+              }
+            })
+          ));
+        }
+
         // 获取页面内容
-        function getPageContent() {
+        async function getPageContent() {
           // 删除添加作答区和删除作答区按钮
           removeAnswerButtons();
 
           // 移除预览页顶部的悬浮按钮栏，避免混入导出内容
           const topButtonsBar = document.querySelector('.top-buttons');
           if (topButtonsBar) topButtonsBar.remove();
+
+          // 图片内联为 dataURL，导出的文档不再依赖远程图链
+          await inlineImagesViaBackground();
+
+          // 内容里已有试卷标题元素时不再重复输出 h1 标题
+          const hasInContentTitle = !!document.querySelector('.title-txt, .paper-title, #pui_maintitle');
+
+          // HTML 转义
+          function escapeHtml(value) {
+            return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+          }
 
           // 应用 MS优化.bas 的排版逻辑
           applyMsOptimizations();
@@ -1166,12 +1201,13 @@ async function convertPageToWord(sendResponse) {
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>${title}</title>
+    <title>${escapeHtml(title)}</title>
     <meta name="ProgId" content="Word.Document">
     <meta name="Generator" content="Microsoft Word 15">
     <meta name="Originator" content="Microsoft Word 15">
     <style>
         @page {
+            size: ${paper === 'b4' ? 'B4 landscape' : 'A4 portrait'};
             margin: 1.27cm;
         }
         body {
@@ -1209,7 +1245,7 @@ async function convertPageToWord(sendResponse) {
     </style>
 </head>
 <body>
-    <h1>${title}</h1>
+    ${hasInContentTitle ? '' : `<h1>${escapeHtml(title)}</h1>`}
     ${contentHtml}
 </body>
 </html>
@@ -1219,7 +1255,7 @@ async function convertPageToWord(sendResponse) {
         }
         
         // 获取页面内容
-        const { html, title } = getPageContent();
+        const { html, title } = await getPageContent();
         
         // 生成文件名
         const fileName = `${title || '网页内容'}.docx`;
@@ -1229,42 +1265,34 @@ async function convertPageToWord(sendResponse) {
           // 检查htmlDocx是否可用
           if (typeof htmlDocx !== 'undefined') {
             const docx = htmlDocx.asBlob(html);
-            
-            // 将blob转换为base64
-            return new Promise((resolve) => {
-              const reader = new FileReader();
-              reader.onloadend = function() {
-                const base64Data = reader.result.split(',')[1];
-                resolve({ success: true, base64Data: base64Data, fileName: fileName });
-              };
-              reader.readAsDataURL(docx);
-            });
+
+            // 直接在本页面内触发下载，避免整个文件 base64 回传
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(docx);
+            link.download = fileName;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+
+            return { success: true, fileName: fileName };
           } else {
             return { success: false, error: 'html-docx-js库未加载' };
           }
         } catch (error) {
           return { success: false, error: error.message };
         }
-      }
+      },
+      args: [message.paperSize || null]
     });
     
     if (!result || !result[0] || !result[0].result) {
       sendResponse({ success: false, error: '无法获取页面内容' });
       return;
     }
-    
-    const scriptResult = result[0].result;
-    
-    if (!scriptResult.success) {
-      sendResponse({ success: false, error: scriptResult.error });
-      return;
-    }
-    
-    // 生成data URL
-    const dataUrl = `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${scriptResult.base64Data}`;
-    
-    // 返回数据给popup.js，由popup.js处理下载
-    sendResponse({ success: true, dataUrl: dataUrl, fileName: scriptResult.fileName });
+
+    // 文件已在页面内触发下载，仅向调用方回传结果状态
+    sendResponse(result[0].result);
   } catch (error) {
     console.error('转换失败:', error);
     sendResponse({ success: false, error: error.message });

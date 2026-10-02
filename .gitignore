@@ -1,0 +1,11 @@
+# Windows 系统文件
+Thumbs.db
+desktop.ini
+
+# 打包产物与签名文件
+*.zip
+*.crx
+*.pem
+
+# 浏览器/编辑器临时文件
+*.crswap

@@ -17,6 +17,12 @@ function getSelectedAnalysisLocation() {
   return document.querySelector('input[name="analysisLocation"]:checked').value;
 }
 
+// 获取当前选中的导出纸张
+function getSelectedPaperSize() {
+  const selected = document.querySelector('input[name="paperSize"]:checked');
+  return selected ? selected.value : 'a4';
+}
+
 // 显示提示结果
 function showVerifyResult(message, type) {
   verifyResult.textContent = message;
@@ -56,13 +62,15 @@ extractBtn.addEventListener('click', async () => {
     }
 
     // 向background.js发送消息，执行差异化处理和提取试卷功能
-    chrome.runtime.sendMessage({
-      action: 'extractPaper',
-      tabId: tab.id,
-      version: version,
-      analysisLocation: analysisLocation
-    }, (response) => {
-      console.log('background.js响应:', response);
+    // 用 Promise 等待后台响应，保证防重复标志在请求结束前有效
+    await new Promise(resolve => {
+      chrome.runtime.sendMessage({
+        action: 'extractPaper',
+        tabId: tab.id,
+        version: version,
+        analysisLocation: analysisLocation,
+        paperSize: getSelectedPaperSize()
+      }, resolve);
     });
   } catch (error) {
     console.error('提取试卷失败:', error);
@@ -226,28 +234,28 @@ window.addEventListener('DOMContentLoaded', async () => {
 
 // 监听保存为Word按钮点击事件
 saveAsWordBtn.addEventListener('click', async () => {
+  const originalText = saveAsWordBtn.textContent;
   try {
-    // 向background.js发送消息
-    const response = await chrome.runtime.sendMessage({ action: 'convertPageToWord' });
+    saveAsWordBtn.disabled = true;
+    saveAsWordBtn.textContent = '正在导出…';
 
-    if (response.success && response.dataUrl && response.fileName) {
-      // 创建下载链接
-      const link = document.createElement('a');
-      link.href = response.dataUrl;
-      link.download = response.fileName;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+    // 向background.js发送消息（文件由后台注入脚本在页面内直接触发下载）
+    const response = await chrome.runtime.sendMessage({
+      action: 'convertPageToWord',
+      paperSize: getSelectedPaperSize()
+    });
 
+    if (response && response.success) {
       showVerifyResult('转换成功！Word文档已保存。', 'success');
-    } else if (response.success) {
-      showVerifyResult('转换成功，但无法下载文件。', 'error');
     } else {
-      showVerifyResult(`转换失败: ${response.error}`, 'error');
+      showVerifyResult(`转换失败: ${(response && response.error) || '后台未响应，请重试'}`, 'error');
     }
   } catch (error) {
     console.error('保存为Word失败:', error);
-    showVerifyResult(`保存为Word失败: ${error.message}`, 'error');
+    showVerifyResult(`转换失败: ${error.message}`, 'error');
+  } finally {
+    saveAsWordBtn.disabled = false;
+    saveAsWordBtn.textContent = originalText;
   }
 });
 
