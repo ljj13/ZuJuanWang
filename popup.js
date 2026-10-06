@@ -4,8 +4,10 @@ const teacherRadio = document.getElementById('teacher');
 const extractBtn = document.getElementById('extract-btn');
 const saveAsWordBtn = document.getElementById('save-as-word-btn');
 const saveAsPdfBtn = document.getElementById('save-as-pdf-btn');
+const exportRow = document.querySelector('.export-row');
 const verifyResult = document.getElementById('verify-result');
 const analysisLocationGroup = document.getElementById('analysis-location');
+const versionHint = document.getElementById('version-hint');
 
 // 获取当前选中的版本
 function getSelectedVersion() {
@@ -160,10 +162,12 @@ async function updateSaveAsWordButton() {
 
     if (isExtractedPage || retryCount >= maxRetries) {
       if (isExtractedPage) {
+        exportRow.style.display = 'flex';
         saveAsWordBtn.style.display = 'block';
         saveAsPdfBtn.style.display = 'block';
         console.log('当前页面是提取试卷后的新页面，显示Word和PDF按钮');
       } else {
+        exportRow.style.display = 'none';
         saveAsWordBtn.style.display = 'none';
         saveAsPdfBtn.style.display = 'none';
         console.log('当前页面不是提取试卷后的新页面，隐藏Word和PDF按钮');
@@ -195,12 +199,14 @@ window.addEventListener('DOMContentLoaded', async () => {
   studentRadio.addEventListener('change', function() {
     if (this.checked) {
       analysisLocationGroup.style.display = 'none';
+      versionHint.textContent = '学生版不含解析，教师版含解析';
     }
   });
 
   teacherRadio.addEventListener('change', function() {
     if (this.checked) {
       analysisLocationGroup.style.display = 'block';
+      versionHint.textContent = '解析默认显示在题目下方';
     }
   });
 
